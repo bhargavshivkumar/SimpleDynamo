@@ -9,8 +9,11 @@ import android.util.Log;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Formatter;
@@ -30,6 +33,9 @@ public class DynamoManager {
     private static final String QUERY_REQUEST ="QUERY_REQUEST" ;
     private static final String SELECT_ALL ="SELECT_ALL" ;
     private static final String SYNCHRONIZE = "SYNCHRONIZE";
+    private static final String SYNCHRONIZE_REPLICA = "SYNCHRONIZE_REPLICA";
+    private static final String SYNCHRONIZE_REPLICA_F1 = "SYNCHRONIZE_REPLICA_F1";
+    private static final String SYNCHRONIZE_REPLICA_F2 = "SYNCHRONIZE_REPLICA_F2";
     LinkedList<Node> dynamoState;
     Node me;
     public static final String TAG = "Dynamo Manager";
@@ -63,6 +69,10 @@ public class DynamoManager {
                 me=n;
             }
         }
+
+        /*TODO Create client task*/
+
+        new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, "", MyPort);
     }
 
     /*
@@ -88,6 +98,18 @@ public class DynamoManager {
 
     }
 
+
+
+
+    private class ClientTask extends AsyncTask<String, Void, Void> {
+
+        @Override
+        protected Void doInBackground(String... msgs) {
+
+            SynchAfterRecover();
+            return null;
+        }
+    }
 
 
     public class ServerTask extends AsyncTask<ServerSocket, String, Void> {
@@ -144,7 +166,7 @@ public class DynamoManager {
                    {
                        Log.d(TAG,"Inserting replica "+objMessage.key);
                        //hashTable.put(objMessage.key, objMessage.value);
-                       SimpleDynamoProvider.writeToDb(objMessage.key,objMessage.value,REPLICA);
+                       SimpleDynamoProvider.writeToDb(objMessage.key,objMessage.value,objMessage.myport);
 
                    }
                    else if(objMessage.MessageType.equalsIgnoreCase(QUERY_REQUEST))
@@ -154,7 +176,7 @@ public class DynamoManager {
                        MessageHandler replyObj = new MessageHandler();
                       // replyObj.cur=cur;
 
-
+                       /*COPY CURSOR TO HASHMAP */
                        while(cur.moveToNext())
                        {
                            Log.d(TAG,cur.getString(1) + " Cursor string");
@@ -183,6 +205,50 @@ public class DynamoManager {
                             int status = SimpleDynamoProvider.DeleteFromDB(objMessage.key);
 
                     }
+                    else if(objMessage.MessageType.equalsIgnoreCase(SYNCHRONIZE))
+                   {
+                       Log.d(TAG,"In server task synchronize method");
+                        /*get keys from caller's replica nodes*/
+                       Cursor cur= SimpleDynamoProvider.ReadReplicasFromDb(objMessage.myport);
+                       MessageHandler replyObj = new MessageHandler();
+
+                       while(cur.moveToNext())
+                       {
+                           Log.d(TAG,cur.getString(1) + " Cursor string");
+                           replyObj.table.put(cur.getString(0),cur.getString(1));
+                       }
+
+                       SocketManager.WriteToSocket(clientSocket,replyObj);
+                   }
+                    else if(objMessage.MessageType.equalsIgnoreCase(SYNCHRONIZE_REPLICA))
+                   {
+                       /* get keys from  nodes for which the caller is a replica */
+                        Cursor cur = SimpleDynamoProvider.RepopulateReplicasFromOwnerDbs();
+                       MessageHandler replyObj = new MessageHandler();
+
+                       while(cur.moveToNext())
+                       {
+                           replyObj.table.put(cur.getString(0),cur.getString(1));
+                       }
+                       SocketManager.WriteToSocket(clientSocket,replyObj);
+                   }
+                    else if(objMessage.MessageType.equalsIgnoreCase(SYNCHRONIZE_REPLICA_F1))
+                   {
+                       /*get keys that belong to my pred's pred whose replicas i store */
+                       Cursor cur= SimpleDynamoProvider.ReadReplicasFromDb(objMessage.myport);
+                       MessageHandler replyObj = new MessageHandler();
+
+                       while(cur.moveToNext())
+                       {
+                           Log.d(TAG,cur.getString(1) + " Cursor string");
+                           replyObj.table.put(cur.getString(0),cur.getString(1));
+                       }
+
+                       SocketManager.WriteToSocket(clientSocket,replyObj);
+
+                   }
+
+
 
 
                     clientSocket.close();
@@ -209,14 +275,212 @@ public class DynamoManager {
 
     public void SynchAfterRecover()
     {
-        /* query one of 2 replicas to get all keys which are replicas*/
-        MessageHandler objMessage=new MessageHandler();
-        objMessage.MessageType=SYNCHRONIZE;
-        Socket sock =SocketManager.OpenSocket(me.succ);
-        SocketManager.WriteToSocket();
+
+        SimpleDynamoActivity.var.WriteToUI("Beginning Recovery...\n\n");
+        /* get own keys from replication nodes.
+        deletes current db entries before adding to handle delete corner case
+         */
+        GetOwnKeys();
+
+
+        /*  Getting  Data from predecessors */
+        GetKeysfromPredecessor();
+
+         /*Get data from pred's pred*/
+        GetKeysFromPrePred();
+
+
+
     }
 
+    public void GetKeysFromPrePred() {
+        String ppred="";
+        for(Node n: dynamoState)
+        {
+            if(n.port == me.pred)
+            {
+                ppred = n.pred;
+            }
+        }
 
+        MessageHandler newObj2=null;
+        try {
+            SimpleDynamoActivity.var.WriteToUI("Querying my Predecessor's Predecessor "+ MathOperationsOnStrings(ppred,"2","DIVIDE")+" ...\n\n");
+            MessageHandler objmess = new MessageHandler();
+            objmess.MessageType = SYNCHRONIZE_REPLICA;
+
+            Socket sock2 = SocketManager.OpenSocket(ppred);
+            if(sock2 !=null) {
+                SocketManager.WriteToSocket(sock2, objmess);
+                newObj2 = SocketManager.ReadFromSocket(sock2);
+                SocketManager.CloseSocket(sock2);
+            }
+            SimpleDynamoActivity.var.WriteToUI("SUCCESS!");
+        }
+        catch (IOException e)
+        {
+            /* if it fails, get from my predecessor */
+            try
+            {
+                SimpleDynamoActivity.var.WriteToUI("Pre pred querying failed ...\n\n");
+                SimpleDynamoActivity.var.WriteToUI("Querying my Predecessor "+ MathOperationsOnStrings(me.pred,"2","DIVIDE")+" ...\n\n");
+                MessageHandler objmess = new MessageHandler();
+                objmess.MessageType = SYNCHRONIZE_REPLICA_F1;
+                objmess.myport=ppred;
+                Socket sock2 = SocketManager.OpenSocket(me.pred);
+                if(sock2 !=null) {
+                    SocketManager.WriteToSocket(sock2, objmess);
+                    newObj2 = SocketManager.ReadFromSocket(sock2);
+                    SocketManager.CloseSocket(sock2);
+                }
+                SimpleDynamoActivity.var.WriteToUI("SUCCESS!");
+            }
+            catch(IOException exx) {
+                SimpleDynamoActivity.var.WriteToUI("That failed too ...\n\n");
+                Log.e(TAG, "Unable to synchronize replicas of pred's pred");
+                e.printStackTrace();
+            }
+        }
+
+        /* iterate through hashmap and write values to DB */
+        if(newObj2 !=null)
+        {
+            /* The value for replica column will be the port of my predecessor*/
+            Iterator<String> it = newObj2.table.keySet().iterator();
+            while (it.hasNext()) {
+                String KEY = it.next();
+                String VALUE = newObj2.table.get(KEY);
+                Log.d(TAG,"Writing key "+KEY+" to DB from hashmap");
+                SimpleDynamoProvider.writeToDb(KEY, VALUE, ppred);
+
+            }
+        }
+    }
+
+    public void GetKeysfromPredecessor() {
+    /* Get data from predecessor.*/
+        MessageHandler newObj=null;
+        try {
+            SimpleDynamoActivity.var.WriteToUI("Querying my Predecessor "+ MathOperationsOnStrings(me.pred,"2","DIVIDE")+" ...\n\n");
+            MessageHandler objmess = new MessageHandler();
+            objmess.MessageType = SYNCHRONIZE_REPLICA;
+            Socket sock2 = SocketManager.OpenSocket(me.pred);
+            if(sock2 !=null) {
+                SocketManager.WriteToSocket(sock2, objmess);
+                newObj = SocketManager.ReadFromSocket(sock2);
+                SocketManager.CloseSocket(sock2);
+            }
+            SimpleDynamoActivity.var.WriteToUI("SUCCESS!");
+        }
+        catch (IOException e)
+        {
+            Log.e(TAG," Predecessor Querying Failed");
+            e.printStackTrace();
+            /*take from my succ which is a replica for my pred */
+
+            try
+            {
+                SimpleDynamoActivity.var.WriteToUI("Predecessor Query failed ...\n\n");
+                SimpleDynamoActivity.var.WriteToUI("Querying my successor "+ MathOperationsOnStrings(me.succ,"2","DIVIDE")+" ...\n\n");
+                MessageHandler objmess = new MessageHandler();
+                objmess.MessageType = SYNCHRONIZE_REPLICA_F1;
+                objmess.myport=me.pred;
+                Socket sock2 = SocketManager.OpenSocket(me.succ);
+                if(sock2 !=null) {
+                    SocketManager.WriteToSocket(sock2, objmess);
+                    newObj = SocketManager.ReadFromSocket(sock2);
+                    SocketManager.CloseSocket(sock2);
+                }
+                SimpleDynamoActivity.var.WriteToUI("SUCCESS!");
+            }
+            catch(IOException exx) {
+                SimpleDynamoActivity.var.WriteToUI("That failed too...\n\n");
+                Log.e(TAG, "Unable to synchronize replicas of pred");
+                exx.printStackTrace();
+            }
+
+        }
+
+
+        /* iterate through hashmap and write values to DB */
+        if(newObj !=null)
+        {
+            /* The value for replica column will be the port of my predecessor*/
+            Iterator<String> it = newObj.table.keySet().iterator();
+            while (it.hasNext()) {
+                String KEY = it.next();
+                String VALUE = newObj.table.get(KEY);
+                Log.d(TAG,"Writing key "+KEY+" to DB from hashmap");
+                SimpleDynamoProvider.writeToDb(KEY, VALUE, me.pred);
+
+            }
+        }
+    }
+
+    public void GetOwnKeys() {
+        MessageHandler replyObj=null;
+        /* query one of 2 replicas to get all keys which are replicas*/
+        try {
+
+            SimpleDynamoActivity.var.WriteToUI("Querying my successor "+ MathOperationsOnStrings(me.succ,"2","DIVIDE")+" ...\n\n");
+            Log.d(TAG,"Inside Getownkeys()");
+            MessageHandler objMessage = new MessageHandler();
+            objMessage.MessageType = SYNCHRONIZE;
+            objMessage.myport=me.port;
+            Socket sock = SocketManager.OpenSocket(me.succ);
+            if(sock != null) {
+                SocketManager.WriteToSocket(sock, objMessage);
+                replyObj = SocketManager.ReadFromSocket(sock);
+                SocketManager.CloseSocket(sock);
+                Log.d(TAG,"Successfully got own key list");
+            }
+            SimpleDynamoActivity.var.WriteToUI("SUCCESS!");
+        }
+        catch(IOException e)
+        {
+            /* If there is no response then query second replica */
+            try {
+                SimpleDynamoActivity.var.WriteToUI("Successor Query Failed ...\n\n");
+                SimpleDynamoActivity.var.WriteToUI("Querying my Tail "+ MathOperationsOnStrings(me.tail,"2","DIVIDE")+" ...\n\n");
+                MessageHandler objMessage = new MessageHandler();
+                objMessage.MessageType = SYNCHRONIZE;
+                objMessage.myport=me.port;
+                Socket sock = SocketManager.OpenSocket(me.tail);
+                if(sock != null) {
+                    SocketManager.WriteToSocket(sock, objMessage);
+                    replyObj = SocketManager.ReadFromSocket(sock);
+                    SocketManager.CloseSocket(sock);
+                }
+                SimpleDynamoActivity.var.WriteToUI("SUCCESS!");
+            }
+            catch (IOException ex)
+            {
+                /* This shouldn't happen as there is only one failure at a time */
+                SimpleDynamoActivity.var.WriteToUI("That failed too ...\n\n");
+                Log.e(TAG, "Couldn't synch from either replica");
+                e.printStackTrace();
+            }
+
+        }
+
+        if(replyObj !=null) {
+        /* delete everything in your database so that you have only whatever is stored on your replicas.
+        * this handles the case when the key is deleted from your replica when you were down*/
+
+            //HandleDelete("@");
+
+        /*iterate through returned hashmap and Write the values to db */
+
+            Iterator<String> it = replyObj.table.keySet().iterator();
+            while (it.hasNext()) {
+                String KEY = it.next();
+                String VALUE = replyObj.table.get(KEY);
+                Log.d(TAG,"Writing key "+KEY+" to DB from hashmap");
+                SimpleDynamoProvider.writeToDb(KEY, VALUE, null);
+
+            }
+        }
+    }
 
 
     /*
@@ -323,11 +587,21 @@ public class DynamoManager {
             objMessage.value=value;
             objMessage.MessageType=INSERT_REQUEST;
 
-            Socket sock = SocketManager.OpenSocket(owner.port);
-            SocketManager.WriteToSocket(sock,objMessage);
-            SocketManager.CloseSocket(sock);
 
-            //handle Failure here. Wait for response from owner, else forward to owner's successor.
+            try {
+                Socket sock = SocketManager.OpenSocket(owner.port);
+                SocketManager.WriteToSocket(sock, objMessage);
+                SocketManager.CloseSocket(sock);
+            }
+            catch (IOException e)
+            {
+                /* If  owner is down, send it to owner's successor, basically replicate it yourself*/
+
+                Replicate(key,value,owner);
+
+            }
+
+
         }
 
     }
@@ -338,21 +612,43 @@ public class DynamoManager {
         objMessage.MessageType = REPLICA;
         objMessage.key=key;
         objMessage.value=value;
+        objMessage.myport=head.port;
 
-        Log.d(TAG,"Writing Replica key : " + key + " to "+head.succ +" from "+head.port);
+
+        try {
+
+            Log.d(TAG, "Replicating Node " + head.port);
+            Log.d(TAG, "Writing to port's successor "+head.succ);
         /* propogate write to successor*/
-        Socket sock =SocketManager.OpenSocket(head.succ);
-        SocketManager.WriteToSocket(sock,objMessage);
-        // I dont need to receive ack because if it fails it will forward to next replica server anyways
-        SocketManager.CloseSocket(sock);
+            Socket sock = SocketManager.OpenSocket(head.succ);
+            SocketManager.WriteToSocket(sock, objMessage);
+            // I dont need to receive ack because if it fails it will forward to next replica server anyways
+            SocketManager.CloseSocket(sock);
+        }
+        catch (IOException e)
+        {
+            /* Dont need to handle anything as if there is a failure while replicating there isn't anything you can do as you are writing to two replicas */
+            Log.e(TAG,"Socket exception in Replica function");
+            e.printStackTrace();
+        }
+
+        try
+        {
 
 
-        Log.d(TAG,"Writing Replica key : " + key + " to "+head.tail +" from "+head.port);
+            Log.d(TAG, "Replicating Node " + head.port);
+            Log.d(TAG, "Writing to port's Tail "+head.tail);
         /* Propogate write to second replica*/
-        Socket sock2=SocketManager.OpenSocket(head.tail);
-        SocketManager.WriteToSocket(sock2,objMessage);
-        SocketManager.CloseSocket(sock2);
-
+            Socket sock2 = SocketManager.OpenSocket(head.tail);
+            SocketManager.WriteToSocket(sock2, objMessage);
+            SocketManager.CloseSocket(sock2);
+        }
+        catch (IOException e)
+        {
+            /* Dont need to handle anything as if there is a failure while replicating there isn't anything you can do as you are writing to two replicas */
+         Log.e(TAG,"Socket exception in Replica function");
+            e.printStackTrace();
+        }
 
     }
 
@@ -390,13 +686,70 @@ public class DynamoManager {
         MessageHandler objMess =new MessageHandler();
         objMess.MessageType=QUERY_REQUEST;
         objMess.key=key;
+        MessageHandler newObj=null;
 
-        Socket sock=SocketManager.OpenSocket(owner.tail);
 
-        SocketManager.WriteToSocket(sock,objMess);
+        if(owner.tail == me.port)
+        {
+                    /* If the tail is the cooridnator node, no need to forward the request */
 
-        MessageHandler newObj= SocketManager.ReadFromSocket(sock);
-        SocketManager.CloseSocket(sock);
+            Cursor cur = SimpleDynamoProvider.ReadFromDb(key);
+
+
+                       /*COPY CURSOR TO HASHMAP */
+            while(cur.moveToNext())
+            {
+                Log.d(TAG,cur.getString(1) + " Cursor string");
+                newObj=new MessageHandler();
+                newObj.table.put(key,cur.getString(1));
+            }
+        }
+        else {
+
+            try {
+
+                Socket sock = SocketManager.OpenSocket(owner.tail);
+
+                SocketManager.WriteToSocket(sock, objMess);
+
+                newObj = SocketManager.ReadFromSocket(sock);
+                SocketManager.CloseSocket(sock);
+            } catch (IOException e) {
+            /* if tail is down, talk to the successor */
+
+                Log.e(TAG, "Query Tail failed hence querying successor:" + owner.succ + " with key: " + key);
+
+                if (owner.succ == me.port) {
+                    /* If the successor is the cooridnator node, no need to forward the request */
+
+                    Cursor cur = SimpleDynamoProvider.ReadFromDb(key);
+
+
+                       /*COPY CURSOR TO HASHMAP */
+                    while (cur.moveToNext()) {
+                        Log.d(TAG, cur.getString(1) + " Cursor string");
+                        newObj=new MessageHandler();
+                        newObj.table.put(key, cur.getString(1));
+                    }
+                } else {
+
+                    try {
+                        Log.d(TAG,"Owner node: "+owner.port + " 's succ is not same as ME: "+me.port+". thus forwarding request to succ");
+                        Socket sock = SocketManager.OpenSocket(owner.succ);
+
+                        SocketManager.WriteToSocket(sock, objMess);
+
+                        newObj = SocketManager.ReadFromSocket(sock);
+                        SocketManager.CloseSocket(sock);
+                    } catch (IOException ex) {
+                /* shouldn't happen as there cannot be two failures at a time */
+                        Log.e(TAG, "Two failures while query tail");
+                        ex.printStackTrace();
+                    }
+                }
+
+            }
+        }
 
         dataCursor.addRow(new String[]{key,newObj.table.get(key)});
 
@@ -429,10 +782,20 @@ public class DynamoManager {
         {
             if(n.port != me.port)
             {
-                Socket sock = SocketManager.OpenSocket(n.port);
-                SocketManager.WriteToSocket(sock,objMessage);
-                MessageHandler newObj = SocketManager.ReadFromSocket(sock);
-                SocketManager.CloseSocket(sock);
+                MessageHandler newObj=null;
+                try {
+                    Socket sock = SocketManager.OpenSocket(n.port);
+                    SocketManager.WriteToSocket(sock, objMessage);
+                     newObj = SocketManager.ReadFromSocket(sock);
+                    SocketManager.CloseSocket(sock);
+                }
+                catch (IOException e)
+                {
+                    /*TODO doesn't require special handling . have to check up */
+                    Log.e(TAG,"IOexception in select all");
+                    e.printStackTrace();
+                    continue;
+                }
 
                 /*populate the cursor with returned values */
                 Iterator<String> it= newObj.table.keySet().iterator();
@@ -466,9 +829,17 @@ public class DynamoManager {
         for(Node n: dynamoState)
         {
             if(n.port != me.port) {
-                Socket sock = SocketManager.OpenSocket(n.port);
-                SocketManager.WriteToSocket(sock,objMessage);
-                SocketManager.CloseSocket(sock);
+                try {
+                    Socket sock = SocketManager.OpenSocket(n.port);
+                    SocketManager.WriteToSocket(sock, objMessage);
+                    SocketManager.CloseSocket(sock);
+                }
+                catch (IOException e)
+                {
+                    /* i dont need to handle failure here as I am handling it while synchronizing */
+                    Log.e(TAG,"IO exception during delete");
+                    e.printStackTrace();
+                }
             }
         }
         return status;

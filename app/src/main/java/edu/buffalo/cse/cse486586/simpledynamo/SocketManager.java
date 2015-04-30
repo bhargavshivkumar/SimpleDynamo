@@ -17,69 +17,64 @@ public class SocketManager {
     Socket helpers to perform socket operations
     */
 
-    public static void CloseSocket(Socket sock) {
-        try{
+    public static void CloseSocket(Socket sock) throws IOException{
+
+            sock.setSoTimeout(5000);
             sock.close();
-        }
-        catch(IOException e)
-        {
-            Log.e(TAG, "Socket Close error");
-        }
+
+
     }
 
-    public static void WriteToSocket(Socket sock,MessageHandler message) {
-        try{
+    public static void WriteToSocket(Socket sock,MessageHandler message) throws IOException {
+
+            sock.setSoTimeout(5000);
             ObjectOutputStream oos =  new ObjectOutputStream(sock.getOutputStream());
             oos.writeObject(message);
-        }
-        catch(IOException e)
-        {
-            Log.e(TAG,"Socket Writing error");
-            e.printStackTrace();
-        }
+
     }
 
-    public static MessageHandler ReadFromSocket(Socket sock) {
+    public static MessageHandler ReadFromSocket(Socket sock) throws IOException {
         try{
+            sock.setSoTimeout(5000);
             ObjectInputStream is =  new ObjectInputStream(sock.getInputStream());
             MessageHandler mess = (MessageHandler)is.readObject();
+
+            //flushing due to EOF exceptions
+
             return mess;
         }
-        catch(Exception e)
+        catch(ClassNotFoundException e)
         {
-            Log.e(TAG,"Socket Reading error");
+            Log.e(TAG,"Socket Reading error:ClassNotFound");
             e.printStackTrace();
         }
         return null;
     }
 
-    public static String ReceiveAcknowledgement(Socket sock) {
+    public static String ReceiveAcknowledgement(Socket sock) throws IOException{
         try{
+            sock.setSoTimeout(5000);
             ObjectInputStream is =  new ObjectInputStream(sock.getInputStream());
             String mess = (String)is.readObject();
             return mess;
         }
-        catch(Exception e)
+        catch(ClassNotFoundException e)
         {
-            Log.e(TAG,"Socket Acknowledgement error");
+            Log.e(TAG,"Socket Acknowledgement error:Class not found");
             e.printStackTrace();
         }
         return null;
     }
 
-    public static Socket OpenSocket(String port) {
+    public static Socket OpenSocket(String port)  throws IOException {
 
-        try
-        {
+
             Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
                     Integer.parseInt(port));
+
+            socket.setSoTimeout(5000);
+
             return socket;
-        }
-        catch(IOException e)
-        {
-            Log.e(TAG,"Socket opening error");
-            e.printStackTrace();
-        }
-        return null;
+
     }
 }

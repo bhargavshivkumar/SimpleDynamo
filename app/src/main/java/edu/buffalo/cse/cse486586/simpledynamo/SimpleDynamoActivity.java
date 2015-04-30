@@ -19,6 +19,7 @@ public class SimpleDynamoActivity extends Activity {
     static String myPort;
     static final int SERVER_PORT = 10000;
     public static final String TAG = "Dynamo Activity";
+    static SimpleDynamoActivity var;
 
     static DynamoManager objDynamoManager;
 
@@ -26,6 +27,8 @@ public class SimpleDynamoActivity extends Activity {
 	protected void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
 		setContentView(R.layout.activity_simple_dynamo);
+
+        var=this;
 
          /*
          * Calculate the port number that this AVD listens on.
@@ -35,6 +38,7 @@ public class SimpleDynamoActivity extends Activity {
         TelephonyManager tel = (TelephonyManager) this.getSystemService(Context.TELEPHONY_SERVICE);
         String portStr = tel.getLine1Number().substring(tel.getLine1Number().length() - 4);
         myPort = String.valueOf((Integer.parseInt(portStr) * 2));
+
 
         objDynamoManager = new DynamoManager();
 
@@ -48,8 +52,9 @@ public class SimpleDynamoActivity extends Activity {
         }
 
         objDynamoManager.InitializeNode(myPort);
-    
-		TextView tv = (TextView) findViewById(R.id.textView1);
+
+
+        TextView tv = (TextView) findViewById(R.id.textView1);
         tv.setMovementMethod(new ScrollingMovementMethod());
 
         //Set test button event handler
@@ -63,6 +68,20 @@ public class SimpleDynamoActivity extends Activity {
 		getMenuInflater().inflate(R.menu.simple_dynamo, menu);
 		return true;
 	}
+
+    public void WriteToUI(final String str)
+    {
+        //reference -http://www.intertech.com/Blog/android-non-ui-to-ui-thread-communications-part-1-of-5/#ixzz3W29JbKDq
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                TextView tv = (TextView) findViewById(R.id.textView1);
+                tv.append(str+"\n");
+            }
+        });
+
+
+    }
 	
 	public void onStop() {
         super.onStop();

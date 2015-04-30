@@ -148,6 +148,9 @@ public class SimpleDynamoProvider extends ContentProvider {
 
     public static void writeToDb(String key,String value,String replica)
     {
+        Log.d("PROVDER","Inserting into database");
+        Log.d("PROVIDER","Key: "+key+" Value: "+value+" replica: "+replica);
+        //SimpleDynamoActivity.var.WriteToUI("Inserting Replica: "+replica);
         ContentValues values = new ContentValues();
         values.put("key",key);
         values.put("value",value);
@@ -161,6 +164,19 @@ public class SimpleDynamoProvider extends ContentProvider {
             Log.e("Provider","Key not inserted in Db");
         }
 
+
+    }
+
+    public static Cursor ReadReplicasFromDb(String replica)
+    {
+        Log.d("PROVIDER","select query from db with replica="+replica);
+        return db.rawQuery("SELECT key,value FROM "+TABLE_NAME+" WHERE replica=?",new String[]{replica});
+    }
+
+    public static Cursor RepopulateReplicasFromOwnerDbs()
+    {
+
+            return db.rawQuery("SELECT key,value FROM "+TABLE_NAME+" WHERE replica is null",null);
 
     }
 
