@@ -4,6 +4,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Formatter;
 import java.util.HashMap;
+import java.util.concurrent.SynchronousQueue;
 
 import android.content.ContentProvider;
 import android.content.ContentUris;
@@ -41,7 +42,11 @@ public class SimpleDynamoProvider extends ContentProvider {
 	public int delete(Uri uri, String selection, String[] selectionArgs) {
 		// TODO Auto-generated method stub
         int reVal=0;
+
         reVal=SimpleDynamoActivity.objDynamoManager.HandleDelete(selection);
+
+
+
         return reVal;
 	}
 
@@ -59,7 +64,11 @@ public class SimpleDynamoProvider extends ContentProvider {
 
         Log.e("Insert",key+";"+value);
 
+
+
         SimpleDynamoActivity.objDynamoManager.HandleInsert(key,value);
+
+
 
         Log.e("insert",""+uri);
         return uri;
@@ -69,7 +78,10 @@ public class SimpleDynamoProvider extends ContentProvider {
    Helper class is used to manage the SQLlite connections
     */
     private static class DatabaseHelper extends SQLiteOpenHelper {
-        DatabaseHelper(Context context){
+
+        private static DatabaseHelper instance = null;
+
+        private DatabaseHelper(Context context){
             super(context, DATABASE_NAME, null, DATABASE_VERSION);
         }
 
@@ -87,18 +99,35 @@ public class SimpleDynamoProvider extends ContentProvider {
             db.execSQL("DROP TABLE IF EXISTS " +  TABLE_NAME);
             onCreate(db);
         }
+
+        public static DatabaseHelper getInstance(Context ctx) {
+            /**
+             * use the application context as suggested by CommonsWare.
+             * this will ensure that you dont accidentally leak an Activitys
+             * context (see this article for more information:
+             * http://android-developers.blogspot.nl/2009/01/avoiding-memory-leaks.html)
+             */
+            if (instance == null) {
+                instance = new DatabaseHelper(ctx.getApplicationContext());
+            }
+            return instance;
+        }
+
+
     }
 
 	@Override
 	public boolean onCreate() {
 		// TODO Auto-generated method stub
         Context context = getContext();
-        DatabaseHelper dbHelper = new DatabaseHelper(context);
+       // DatabaseHelper dbHelper = new DatabaseHelper(context);
         /**
          * Create a write able database which will trigger its
          * creation if it doesn't already exist.
          */
-        db = dbHelper.getWritableDatabase();
+      //  db = dbHelper.getWritableDatabase();
+
+        db= DatabaseHelper.getInstance(context).getWritableDatabase();
         return (db == null)? false:true;
 
 	}
@@ -109,6 +138,8 @@ public class SimpleDynamoProvider extends ContentProvider {
 		// TODO Auto-generated method stub
         Cursor cursor;
         Log.e("Provider",selection+" : "+ selection.equals("*"));
+
+
 
         if(selection.equals("*") || selection.equals("\"*\""))
         {
@@ -123,6 +154,7 @@ public class SimpleDynamoProvider extends ContentProvider {
             cursor = SimpleDynamoActivity.objDynamoManager.HandleQuery(selection);
 
         }
+
 
 
 
@@ -146,9 +178,18 @@ public class SimpleDynamoProvider extends ContentProvider {
         return formatter.toString();
     }
 
-    public static void writeToDb(String key,String value,String replica)
+    public static void writeToDb(String key,String value,String replica,boolean isBoot)
     {
-        Log.d("PROVDER","Inserting into database");
+
+        try {
+            if(!isBoot)
+                DynamoManager.SynchSem.acquire();
+        }
+        catch(InterruptedException e)
+        {
+            e.printStackTrace();
+        }
+        Log.d("PROVIDER","Inserting into database");
         Log.d("PROVIDER","Key: "+key+" Value: "+value+" replica: "+replica);
         //SimpleDynamoActivity.var.WriteToUI("Inserting Replica: "+replica);
         ContentValues values = new ContentValues();
@@ -163,30 +204,79 @@ public class SimpleDynamoProvider extends ContentProvider {
         {
             Log.e("Provider","Key not inserted in Db");
         }
+        if(!isBoot)
+        DynamoManager.SynchSem.release();
 
 
     }
 
-    public static Cursor ReadReplicasFromDb(String replica)
+    public static Cursor ReadReplicasFromDb(String replica,boolean isBoot)
     {
+        try {
+            if(!isBoot)
+            DynamoManager.SynchSem.acquire();
+        }
+        catch(InterruptedException e)
+        {
+            e.printStackTrace();
+        }
         Log.d("PROVIDER","select query from db with replica="+replica);
+
+        if(!isBoot)
+        DynamoManager.SynchSem.release();
+
         return db.rawQuery("SELECT key,value FROM "+TABLE_NAME+" WHERE replica=?",new String[]{replica});
-    }
-
-    public static Cursor RepopulateReplicasFromOwnerDbs()
-    {
-
-            return db.rawQuery("SELECT key,value FROM "+TABLE_NAME+" WHERE replica is null",null);
 
     }
 
-    public static Cursor ReadAllFromDb()
+    public static Cursor RepopulateReplicasFromOwnerDbs(boolean isBoot)
     {
-      return db.rawQuery("SELECT key,value FROM "+TABLE_NAME,null);
+        try {
+            if(!isBoot)
+                DynamoManager.SynchSem.acquire();
+        }
+        catch(InterruptedException e)
+        {
+            e.printStackTrace();
+        }
+
+            Cursor cur= db.rawQuery("SELECT key,value FROM "+TABLE_NAME+" WHERE replica is null",null);
+
+            if(!isBoot)
+                DynamoManager.SynchSem.release();
+
+        return cur;
+
     }
 
-    public static int DeleteFromDB(String key)
+    public static Cursor ReadAllFromDb(boolean isBoot)
     {
+        try {
+            if(!isBoot)
+                DynamoManager.SynchSem.acquire();
+        }
+        catch(InterruptedException e)
+        {
+            e.printStackTrace();
+        }
+      Cursor cur= db.rawQuery("SELECT key,value FROM "+TABLE_NAME,null);
+        if(!isBoot)
+            DynamoManager.SynchSem.release();
+
+        return cur;
+    }
+
+    public static int DeleteFromDB(String key,boolean isBoot)
+    {
+        try {
+            if(!isBoot)
+                DynamoManager.SynchSem.acquire();
+        }
+        catch(InterruptedException e)
+        {
+            e.printStackTrace();
+        }
+
         int status;
         if(key.equals("@") ||key.equals("\"@\"") || key.equals("*") || key.equals("\"*\""))
         {
@@ -201,13 +291,26 @@ public class SimpleDynamoProvider extends ContentProvider {
             status=db.delete(TABLE_NAME,"key=?",new String[]{key});
 
         }
+
+        if(!isBoot)
+        {
+            DynamoManager.SynchSem.release();
+        }
         return status;
     }
 
 
-    public static Cursor ReadFromDb(String key)
+    public static Cursor ReadFromDb(String key,boolean isBoot)
     {
         //Start query code
+        try {
+            if(!isBoot)
+                DynamoManager.SynchSem.acquire();
+        }
+        catch(InterruptedException e)
+        {
+            e.printStackTrace();
+        }
 
         SQLiteQueryBuilder qb = new SQLiteQueryBuilder();
         qb.setTables(TABLE_NAME);
@@ -222,6 +325,10 @@ public class SimpleDynamoProvider extends ContentProvider {
         //c.setNotificationUri(getContext().getContentResolver(), uri);
 
         Log.e("Provider", c.getCount()+" rows returned from db");
+
+        if(!isBoot)
+            DynamoManager.SynchSem.release();
+
         return c;
     }
 

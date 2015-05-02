@@ -42,6 +42,8 @@ public class SimpleDynamoActivity extends Activity {
 
         objDynamoManager = new DynamoManager();
 
+
+
         try {
             ServerSocket serverSocket = new ServerSocket(SERVER_PORT);
             objDynamoManager.new ServerTask().executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR, serverSocket);

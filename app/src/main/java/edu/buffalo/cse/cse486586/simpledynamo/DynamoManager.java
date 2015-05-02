@@ -20,6 +20,7 @@ import java.util.Formatter;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.concurrent.Semaphore;
 
 /**
  * Created by bhargav on 4/21/15.
@@ -36,6 +37,12 @@ public class DynamoManager {
     private static final String SYNCHRONIZE_REPLICA = "SYNCHRONIZE_REPLICA";
     private static final String SYNCHRONIZE_REPLICA_F1 = "SYNCHRONIZE_REPLICA_F1";
     private static final String SYNCHRONIZE_REPLICA_F2 = "SYNCHRONIZE_REPLICA_F2";
+
+
+
+    public static Semaphore SynchSem=new Semaphore(0);
+
+
     LinkedList<Node> dynamoState;
     Node me;
     public static final String TAG = "Dynamo Manager";
@@ -150,9 +157,9 @@ public class DynamoManager {
                             Log.d(TAG,"Inserting key:" +objMessage.key+" into hashtable");
 
                             //hashTable.put(objMessage.key, objMessage.value);
-                            SimpleDynamoProvider.writeToDb(objMessage.key,objMessage.value,null);
+                            SimpleDynamoProvider.writeToDb(objMessage.key,objMessage.value,null,false);
 
-                            Replicate(objMessage.key,objMessage.value,me);
+                            //Replicate(objMessage.key,objMessage.value,me);
                         }
                         else
                         {
@@ -166,13 +173,13 @@ public class DynamoManager {
                    {
                        Log.d(TAG,"Inserting replica "+objMessage.key);
                        //hashTable.put(objMessage.key, objMessage.value);
-                       SimpleDynamoProvider.writeToDb(objMessage.key,objMessage.value,objMessage.myport);
+                       SimpleDynamoProvider.writeToDb(objMessage.key,objMessage.value,objMessage.myport,false);
 
                    }
                    else if(objMessage.MessageType.equalsIgnoreCase(QUERY_REQUEST))
                    {
                        /* Querying the tail directly */
-                        Cursor cur = SimpleDynamoProvider.ReadFromDb(objMessage.key);
+                        Cursor cur = SimpleDynamoProvider.ReadFromDb(objMessage.key,false);
                        MessageHandler replyObj = new MessageHandler();
                       // replyObj.cur=cur;
 
@@ -202,14 +209,14 @@ public class DynamoManager {
                        else if(objMessage.MessageType.equalsIgnoreCase(DELETE_REQUEST))
                     {
 
-                            int status = SimpleDynamoProvider.DeleteFromDB(objMessage.key);
+                            int status = SimpleDynamoProvider.DeleteFromDB(objMessage.key,false);
 
                     }
                     else if(objMessage.MessageType.equalsIgnoreCase(SYNCHRONIZE))
                    {
                        Log.d(TAG,"In server task synchronize method");
                         /*get keys from caller's replica nodes*/
-                       Cursor cur= SimpleDynamoProvider.ReadReplicasFromDb(objMessage.myport);
+                       Cursor cur= SimpleDynamoProvider.ReadReplicasFromDb(objMessage.myport,true);
                        MessageHandler replyObj = new MessageHandler();
 
                        while(cur.moveToNext())
@@ -223,7 +230,7 @@ public class DynamoManager {
                     else if(objMessage.MessageType.equalsIgnoreCase(SYNCHRONIZE_REPLICA))
                    {
                        /* get keys from  nodes for which the caller is a replica */
-                        Cursor cur = SimpleDynamoProvider.RepopulateReplicasFromOwnerDbs();
+                        Cursor cur = SimpleDynamoProvider.RepopulateReplicasFromOwnerDbs(true);
                        MessageHandler replyObj = new MessageHandler();
 
                        while(cur.moveToNext())
@@ -235,7 +242,7 @@ public class DynamoManager {
                     else if(objMessage.MessageType.equalsIgnoreCase(SYNCHRONIZE_REPLICA_F1))
                    {
                        /*get keys that belong to my pred's pred whose replicas i store */
-                       Cursor cur= SimpleDynamoProvider.ReadReplicasFromDb(objMessage.myport);
+                       Cursor cur= SimpleDynamoProvider.ReadReplicasFromDb(objMessage.myport,true);
                        MessageHandler replyObj = new MessageHandler();
 
                        while(cur.moveToNext())
@@ -280,6 +287,9 @@ public class DynamoManager {
         /* get own keys from replication nodes.
         deletes current db entries before adding to handle delete corner case
          */
+
+        int status = SimpleDynamoProvider.DeleteFromDB("@",true);
+
         GetOwnKeys();
 
 
@@ -289,6 +299,8 @@ public class DynamoManager {
          /*Get data from pred's pred*/
         GetKeysFromPrePred();
 
+
+        SynchSem.release();
 
 
     }
@@ -351,7 +363,7 @@ public class DynamoManager {
                 String KEY = it.next();
                 String VALUE = newObj2.table.get(KEY);
                 Log.d(TAG,"Writing key "+KEY+" to DB from hashmap");
-                SimpleDynamoProvider.writeToDb(KEY, VALUE, ppred);
+                SimpleDynamoProvider.writeToDb(KEY, VALUE, ppred,true);
 
             }
         }
@@ -411,7 +423,7 @@ public class DynamoManager {
                 String KEY = it.next();
                 String VALUE = newObj.table.get(KEY);
                 Log.d(TAG,"Writing key "+KEY+" to DB from hashmap");
-                SimpleDynamoProvider.writeToDb(KEY, VALUE, me.pred);
+                SimpleDynamoProvider.writeToDb(KEY, VALUE, me.pred,true);
 
             }
         }
@@ -476,7 +488,7 @@ public class DynamoManager {
                 String KEY = it.next();
                 String VALUE = replyObj.table.get(KEY);
                 Log.d(TAG,"Writing key "+KEY+" to DB from hashmap");
-                SimpleDynamoProvider.writeToDb(KEY, VALUE, null);
+                SimpleDynamoProvider.writeToDb(KEY, VALUE, null,true);
 
             }
         }
@@ -574,7 +586,7 @@ public class DynamoManager {
             Log.d(TAG,"Adding to hashTable: "+key);
             //SimpleDhtActivity.var.WriteToUI("Inserting key:" +key+" into hashtable");
            // hashTable.put(key,value);
-            SimpleDynamoProvider.writeToDb(key,value,null);
+            SimpleDynamoProvider.writeToDb(key,value,null,false);
             Replicate(key,value,me);
 
         }
@@ -592,10 +604,16 @@ public class DynamoManager {
                 Socket sock = SocketManager.OpenSocket(owner.port);
                 SocketManager.WriteToSocket(sock, objMessage);
                 SocketManager.CloseSocket(sock);
+
+                /* co ordinator is handling replication as well. This covers case when owner fails before replication*/
+                Replicate(key,value,owner);
+
             }
             catch (IOException e)
             {
                 /* If  owner is down, send it to owner's successor, basically replicate it yourself*/
+
+                Log.e(TAG,"Trying to insert to owner: "+owner.port+" failed. Replicating directly.");
 
                 Replicate(key,value,owner);
 
@@ -664,7 +682,7 @@ public class DynamoManager {
 
 
 
-            dataCursor = SimpleDynamoProvider.ReadFromDb(key);
+            dataCursor = SimpleDynamoProvider.ReadFromDb(key,false);
         }
         else
         {
@@ -693,7 +711,7 @@ public class DynamoManager {
         {
                     /* If the tail is the cooridnator node, no need to forward the request */
 
-            Cursor cur = SimpleDynamoProvider.ReadFromDb(key);
+            Cursor cur = SimpleDynamoProvider.ReadFromDb(key,false);
 
 
                        /*COPY CURSOR TO HASHMAP */
@@ -722,7 +740,9 @@ public class DynamoManager {
                 if (owner.succ == me.port) {
                     /* If the successor is the cooridnator node, no need to forward the request */
 
-                    Cursor cur = SimpleDynamoProvider.ReadFromDb(key);
+                    Log.d(TAG,"Tail of owner is co-ordinator node");
+
+                    Cursor cur = SimpleDynamoProvider.ReadFromDb(key,false);
 
 
                        /*COPY CURSOR TO HASHMAP */
@@ -753,7 +773,7 @@ public class DynamoManager {
 
         dataCursor.addRow(new String[]{key,newObj.table.get(key)});
 
-        Log.v(TAG,"Query returned : " +dataCursor.getCount());
+        Log.v(TAG,"Query returned : " +dataCursor.getCount() + " Key: " +key+" value: "+newObj.table.get(key));
 
        return dataCursor;
 
@@ -762,7 +782,7 @@ public class DynamoManager {
     public Cursor HandleSelectAt(String key)
     {
         //Read from local db and pass all rows
-        Cursor cur= SimpleDynamoProvider.ReadAllFromDb();
+        Cursor cur= SimpleDynamoProvider.ReadAllFromDb(false);
         return cur;
     }
 
@@ -820,7 +840,7 @@ public class DynamoManager {
     public int HandleDelete(String key)
     {
         //Delete from current node's database
-        int status = SimpleDynamoProvider.DeleteFromDB(key);
+        int status = SimpleDynamoProvider.DeleteFromDB(key,false);
 
         MessageHandler objMessage =new MessageHandler();
         objMessage.MessageType=DELETE_REQUEST;
